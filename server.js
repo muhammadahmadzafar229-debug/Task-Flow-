@@ -1,119 +1,112 @@
-// =============================================
-// KAAM KARO — Backend Server
-// Node.js + Express
-// =============================================
-
 const express = require('express');
 const cors = require('cors');
+const { MongoClient, ObjectId } = require('mongodb');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
-// ---- Middleware ----
-app.use(cors());                    // Frontend ko allow karo
-app.use(express.json());            // JSON data parse karo
-app.use(express.static('./')); // Frontend serve karo
+// MongoDB connection
+const MONGO_URL = process.env.MONGO_URL || 'YOUR_MONGODB_CONNECTION_STRING';
+const DB_NAME = 'taskflow';
+const COLLECTION = 'tasks';
 
-// =============================================
-// IN-MEMORY DATABASE (practice ke liye)
-// Baad mein MongoDB se replace karna
-// =============================================
-let tasks = [
-  { _id: '1', text: 'HTML aur CSS revise karo', priority: 'high', done: true },
-  { _id: '2', text: 'JavaScript fetch API seekho', priority: 'high', done: false },
-  { _id: '3', text: 'Backend se connect karo', priority: 'medium', done: false },
-];
+let db;
 
-let nextId = 4; // auto increment ID
-
-// =============================================
-// ROUTES (API endpoints)
-// =============================================
-
-// GET /api/tasks — Sare tasks lao
-app.get('/api/tasks', (req, res) => {
-  console.log('📋 GET /api/tasks — ' + tasks.length + ' tasks mil gaye');
-  res.json(tasks);
-});
-
-// POST /api/tasks — Naya task add karo
-app.post('/api/tasks', (req, res) => {
-  const { text, priority } = req.body;
-
-  // Validation — khaali text allow nahi
-  if (!text || text.trim() === '') {
-    return res.status(400).json({ error: 'Task text zaroori hai!' });
+async function connectDB() {
+  try {
+    const client = new MongoClient(MONGO_URL);
+    await client.connect();
+    db = client.db(DB_NAME);
+    console.log('✅ MongoDB se connect ho gaya!');
+  } catch (err) {
+    console.error('❌ MongoDB connection failed:', err.message);
+    process.exit(1);
   }
+}
 
-  const newTask = {
-    _id: String(nextId++),
-    text: text.trim(),
-    priority: priority || 'medium',
-    done: false,
-    createdAt: new Date().toISOString()
-  };
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.static('./'));
 
-  tasks.unshift(newTask); // list ke upar add karo
-  console.log('✅ POST /api/tasks — Naya task: ' + newTask.text);
-  res.status(201).json(newTask);
-});
-
-// PATCH /api/tasks/:id — Task update karo (done toggle)
-app.patch('/api/tasks/:id', (req, res) => {
-  const task = tasks.find(t => t._id === req.params.id);
-
-  if (!task) {
-    return res.status(404).json({ error: 'Task nahi mila!' });
-  }
-
-  // Sirf allowed fields update karo
-  if (req.body.done !== undefined) task.done = req.body.done;
-  if (req.body.text) task.text = req.body.text;
-  if (req.body.priority) task.priority = req.body.priority;
-
-  console.log('🔄 PATCH /api/tasks/' + req.params.id + ' — Updated');
-  res.json(task);
-});
-
-// DELETE /api/tasks/:id — Task delete karo
-app.delete('/api/tasks/:id', (req, res) => {
-  const index = tasks.findIndex(t => t._id === req.params.id);
-
-  if (index === -1) {
-    return res.status(404).json({ error: 'Task nahi mila!' });
-  }
-
-  const deleted = tasks.splice(index, 1)[0];
-  console.log('🗑️  DELETE /api/tasks/' + req.params.id + ' — Deleted: ' + deleted.text);
-  res.json({ message: 'Task delete ho gaya', task: deleted });
-});
-
-// DELETE /api/tasks — Sare done tasks clear karo
-app.delete('/api/tasks', (req, res) => {
-  const before = tasks.length;
-  tasks = tasks.filter(t => !t.done);
-  console.log('🧹 Cleared ' + (before - tasks.length) + ' done tasks');
-  res.json({ message: 'Mukammal tasks hata diye' });
-});
+// ── ROUTES ──
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', tasks: tasks.length, message: 'Server chal raha hai!' });
+  res.json({ status: 'ok', message: 'TaskFlow backend chal raha hai!' });
 });
 
-// =============================================
-// SERVER START
-// =============================================
-app.listen(PORT, () => {
-  console.log('');
-  console.log('🚀 Kaam Karo Backend chal raha hai!');
-  console.log('📡 URL: http://localhost:' + PORT);
-  console.log('🌐 App: http://localhost:' + PORT + '/index.html');
-  console.log('');
-  console.log('Available API routes:');
-  console.log('  GET    /api/tasks       — sare tasks');
-  console.log('  POST   /api/tasks       — naya task');
-  console.log('  PATCH  /api/tasks/:id   — task update');
-  console.log('  DELETE /api/tasks/:id   — task delete');
-  console.log('');
+// GET all tasks
+app.get('/api/tasks', async (req, res) => {
+  try {
+    const tasks = await db.collection(COLLECTION)
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+    console.log(`📋 GET /api/tasks — ${tasks.length} tasks mile`);
+    res.json(tasks);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST new task
+app.post('/api/tasks', async (req, res) => {
+  try {
+    const { text, priority = 'medium' } = req.body;
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: 'Task text zaroori hai' });
+    }
+    const task = {
+      text: text.trim(),
+      priority,
+      done: false,
+      createdAt: new Date()
+    };
+    const result = await db.collection(COLLECTION).insertOne(task);
+    const newTask = { ...task, _id: result.insertedId };
+    console.log(`✅ POST /api/tasks — Naya task: "${text}"`);
+    res.status(201).json(newTask);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH update task
+app.patch('/api/tasks/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+    delete updates._id;
+
+    await db.collection(COLLECTION).updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updates }
+    );
+    const updated = await db.collection(COLLECTION).findOne({ _id: new ObjectId(id) });
+    console.log(`🔄 PATCH /api/tasks/${id} — Updated`);
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE task
+app.delete('/api/tasks/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await db.collection(COLLECTION).deleteOne({ _id: new ObjectId(id) });
+    console.log(`🗑️ DELETE /api/tasks/${id}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Start server
+connectDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server chal raha hai: http://localhost:${PORT}`);
+    console.log(`📱 App: http://localhost:${PORT}/index.html`);
+  });
 });
